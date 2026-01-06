@@ -1,3 +1,4 @@
+"use client";
 // app/page.js
 import React from 'react';
 
