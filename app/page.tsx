@@ -1,138 +1,189 @@
 "use client";
 
-import React, { useEffect, useState } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { createClient } from '@supabase/supabase-js';
 
-// Initialize Supabase Client
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// --- 1. CONFIGURATION & CLIENT ---
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
-export default function MitraDashboard() {
-  const [order, setOrder] = useState(null);
-  const [loading, setLoading] = useState(true);
+// --- 2. UTILITIES ---
+const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
+  if (!lat1 || !lon1 || !lat2 || !lon2) return 0;
+  const R = 6371; 
+  const dLat = (lat2 - lat1) * (Math.PI / 180);
+  const dLon = (lon2 - lon1) * (Math.PI / 180);
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+            Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+            Math.sin(dLon / 2) * Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return parseFloat((R * c).toFixed(2));
+};
 
-  // Shared Styles
-  const colors = {
-    mishTeeOrange: '#FF8C00',
-    onlineGreen: '#22c55e',
-    backgroundGray: '#f9fafb',
-    cardWhite: '#ffffff',
-    textDark: '#1f2937',
-    textMuted: '#6b7280',
+export default function MishTeeLogisticsEngine() {
+  // --- 3. STATE ---
+  const [phone, setPhone] = useState('');
+  const [agent, setAgent] = useState<any>(null);
+  const [orderData, setOrderData] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [showPoD, setShowPoD] = useState(false);
+  const [jobDone, setJobDone] = useState(false);
+  const [congestion] = useState(Math.floor(Math.random() * 10) + 1);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  const BRAND = { orange: '#FF8C00', bg: '#F3F4F6', white: '#FFFFFF', text: '#111827', green: '#065F46' };
+  
+  const styles: { [key: string]: React.CSSProperties } = {
+    container: { maxWidth: '500px', margin: '0 auto', minHeight: '100vh', backgroundColor: BRAND.bg, fontFamily: 'sans-serif', padding: '20px', display: 'flex', flexDirection: 'column' },
+    card: { backgroundColor: BRAND.white, borderRadius: '20px', padding: '20px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.1)', border: '1px solid #E5E7EB', marginBottom: '20px' },
+    btn: { backgroundColor: BRAND.orange, color: 'white', border: 'none', borderRadius: '12px', padding: '16px', fontWeight: 'bold', fontSize: '16px', cursor: 'pointer', width: '100%' },
+    badge: { padding: '4px 8px', borderRadius: '6px', fontSize: '11px', fontWeight: 'bold' },
+    canvas: { border: '2px dashed #D1D5DB', borderRadius: '12px', backgroundColor: '#FFF', touchAction: 'none' }
   };
 
-  useEffect(() => {
-    async function fetchActiveOrder() {
-      try {
-        setLoading(true);
-        // Logic: Fetch order for Agent A101 joined with customer full_name
-        const { data, error } = await supabase
-          .from('orders')
-          .select(`
-            delivery_address,
-            customers (
-              full_name
-            )
-          `)
-          .eq('agent_id', 'A101')
-          .order('created_at', { ascending: false })
-          .limit(1)
-          .single();
+  // --- 4. DATA LOGIC ---
+  const fetchData = async (inputPhone?: string) => {
+    setLoading(true);
+    try {
+      const targetPhone = inputPhone || phone;
+      const { data: agentData } = await supabase.from('agents').select('*').eq('phone_number', targetPhone).single();
+      if (!agentData) throw new Error("Agent not found.");
+      setAgent(agentData);
 
-        if (error) throw error;
-        setOrder(data);
-      } catch (err) {
-        console.error("Hydration Error:", err.message);
-      } finally {
-        setLoading(false);
-      }
+      const { data: task } = await supabase
+        .from('orders')
+        .select(`order_id, status, delivery_address, customers!inner(full_name, lat, lon), stores!inner(lat, lon)`)
+        .eq('agent_id', agentData.agent_id)
+        .in('status', ['Pending', 'Out for Delivery'])
+        .order('created_at', { ascending: false }).limit(1).single();
+
+      setOrderData(task || null);
+      setJobDone(false);
+    } catch (err: any) { alert(err.message); }
+    finally { setLoading(false); }
+  };
+
+  const updateStatus = async (newStatus: string) => {
+    await supabase.from('orders').update({ status: newStatus }).eq('order_id', orderData.order_id);
+    if (newStatus === 'Delivered') {
+      setShowPoD(false);
+      setJobDone(true);
+      setOrderData(null);
+    } else {
+      fetchData();
     }
+  };
 
-    fetchActiveOrder();
-  }, []);
+  // --- 5. CANVAS LOGIC (Signature) ---
+  const startDrawing = (e: any) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.strokeStyle = '#000';
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX || e.touches[0].clientX) - rect.left;
+    const y = (e.clientY || e.touches[0].clientY) - rect.top;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    const draw = (moveEvent: any) => {
+      const mx = (moveEvent.clientX || moveEvent.touches[0].clientX) - rect.left;
+      const my = (moveEvent.clientY || moveEvent.touches[0].clientY) - rect.top;
+      ctx.lineTo(mx, my);
+      ctx.stroke();
+    };
+    const stop = () => {
+      canvas.removeEventListener('mousemove', draw);
+      canvas.removeEventListener('touchmove', draw);
+    };
+    canvas.addEventListener('mousemove', draw);
+    canvas.addEventListener('touchmove', draw);
+    canvas.addEventListener('mouseup', stop);
+    canvas.addEventListener('touchend', stop);
+  };
+
+  if (!agent) return (
+    <div style={styles.container}>
+      <div style={{ textAlign: 'center', marginTop: '100px' }}>
+        <img src="https://raw.githubusercontent.com/sudhir-voleti/mishtee-magic/main/mishTee_logo.png" style={{ width: '100px' }} alt="logo" />
+        <h2 style={{ color: BRAND.orange }}>Mitra Login</h2>
+        <input style={{ width: '100%', padding: '16px', borderRadius: '12px', border: '1px solid #DDD', margin: '20px 0', boxSizing: 'border-box' }}
+          type="tel" placeholder="10-digit Phone" value={phone} onChange={(e) => setPhone(e.target.value)} />
+        <button style={styles.btn} onClick={() => fetchData()}>Login</button>
+      </div>
+    </div>
+  );
+
+  if (jobDone) return (
+    <div style={{ ...styles.container, justifyContent: 'center', textAlign: 'center' }}>
+      <h1 style={{ fontSize: '60px' }}>🎉</h1>
+      <h2 style={{ color: BRAND.green }}>Job Well Done, Mitra!</h2>
+      <p style={{ color: '#6B7280' }}>The sweets have been delivered safely.</p>
+      <button style={{ ...styles.btn, marginTop: '20px' }} onClick={() => fetchData()}>Look for Next Task</button>
+    </div>
+  );
+
+  if (!orderData) return (
+    <div style={styles.container}>
+      <div style={{ textAlign: 'center', marginTop: '100px' }}>
+        <p>No active tasks. Waiting for new orders...</p>
+        <button style={{ ...styles.btn, marginTop: '20px' }} onClick={() => fetchData()}>Refresh</button>
+      </div>
+    </div>
+  );
+
+  const dist = calculateDistance(orderData.stores.lat, orderData.stores.lon, orderData.customers.lat, orderData.customers.lon);
+  const eta = (congestion > 7 ? Math.ceil(dist * 6) + 20 : Math.ceil(dist * 6));
 
   return (
-    <div style={{
-      backgroundColor: colors.backgroundGray,
-      minHeight: '100vh',
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      fontFamily: 'system-ui, -apple-system, sans-serif',
-      padding: '20px',
-    }}>
-      <main style={{ width: '100%', maxWidth: '500px', display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        
-        {/* LOGO */}
-        <div style={{ display: 'flex', justifyContent: 'center', marginTop: '20px' }}>
-          <img 
-            src="https://raw.githubusercontent.com/sudhir-voleti/mishtee-magic/main/mishTee_logo.png" 
-            alt="mishTee Logo" 
-            style={{ width: '80px', height: 'auto' }}
-          />
-        </div>
+    <div style={styles.container}>
+      <header style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '20px' }}>
+        <h3 style={{ color: BRAND.orange, margin: 0 }}>Mitra: {agent.agent_id}</h3>
+        <span style={{ fontWeight: 'bold', color: BRAND.green }}>● Online</span>
+      </header>
 
-        {/* HEADER & STATUS */}
-        <div style={{ textAlign: 'center' }}>
-          <h1 style={{ color: colors.mishTeeOrange, fontSize: '24px', fontWeight: '800', margin: '0 0 8px 0' }}>
-            mishTee Delivery Mitra
-          </h1>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', backgroundColor: '#ecfdf5', padding: '4px 12px', borderRadius: '20px', border: '1px solid #d1fae5' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: colors.onlineGreen }} />
-            <span style={{ fontSize: '13px', fontWeight: '600', color: '#065f46' }}>Agent Online</span>
+      <div style={styles.card}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '10px' }}>
+          <span style={{ ...styles.badge, backgroundColor: '#E0F2FE', color: '#0369A1' }}>{dist} km</span>
+          {congestion > 7 && <span style={{ ...styles.badge, backgroundColor: '#FEE2E2', color: '#B91C1C' }}>⚠️ TRAFFIC</span>}
+        </div>
+        <p style={{ margin: 0, fontSize: '11px', color: '#9CA3AF' }}>RECIPIENT</p>
+        <h3 style={{ margin: '2px 0 8px 0' }}>{orderData.customers.full_name}</h3>
+        <p style={{ fontSize: '14px', color: '#4B5563' }}>{orderData.delivery_address}</p>
+        <div style={{ marginTop: '15px', borderTop: '1px solid #EEE', paddingTop: '10px', display: 'flex', justifyContent: 'space-between' }}>
+          <span>ETA: <b>{eta}m</b></span>
+          <span>Status: <b style={{ color: BRAND.orange }}>{orderData.status}</b></span>
+        </div>
+      </div>
+
+      {showPoD ? (
+        <div style={styles.card}>
+          <p style={{ fontWeight: 'bold', marginBottom: '10px' }}>Recipient Signature</p>
+          <canvas ref={canvasRef} width={300} height={150} style={styles.canvas} onMouseDown={startDrawing} onTouchStart={startDrawing} />
+          <div style={{ display: 'flex', gap: '10px', marginTop: '15px' }}>
+            <button style={{ ...styles.btn, backgroundColor: '#6B7280' }} onClick={() => setShowPoD(false)}>Back</button>
+            <button style={styles.btn} onClick={() => updateStatus('Delivered')}>Confirm Delivery</button>
           </div>
         </div>
-
-        {/* DELIVERY CARD (Hydrated) */}
-        <div style={{
-          backgroundColor: colors.cardWhite,
-          borderRadius: '16px',
-          padding: '24px',
-          boxShadow: '0 4px 15px rgba(0,0,0,0.05)',
-          border: '1px solid #f3f4f6',
-        }}>
-          {loading ? (
-            <p style={{ color: colors.textMuted, textAlign: 'center', fontWeight: '600' }}>Loading active task...</p>
-          ) : order ? (
-            <>
-              <p style={{ color: colors.textMuted, fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', margin: '0 0 4px 0' }}>Active Task</p>
-              <h2 style={{ color: colors.textDark, fontSize: '18px', fontWeight: '700', margin: '0 0 12px 0' }}>
-                Deliver to {order.customers?.full_name || 'Valued Customer'}
-              </h2>
-              <div style={{ borderTop: '1px solid #eee', paddingTop: '12px' }}>
-                <p style={{ color: colors.textMuted, fontSize: '12px', fontWeight: '700', textTransform: 'uppercase', margin: '0' }}>Address</p>
-                <p style={{ color: colors.textDark, fontSize: '14px', lineHeight: '1.4', margin: '4px 0 0 0' }}>
-                  {order.delivery_address}
-                </p>
-              </div>
-            </>
+      ) : (
+        <>
+          <div style={{ borderRadius: '20px', overflow: 'hidden', height: '200px', marginBottom: '20px', border: '1px solid #DDD' }}>
+            <iframe width="100%" height="100%" frameBorder="0" src={`https://www.openstreetmap.org/export/embed.html?bbox=${orderData.customers.lon-0.01},${orderData.customers.lat-0.01},${orderData.customers.lon+0.01},${orderData.customers.lat+0.01}&layer=mapnik&marker=${orderData.customers.lat},${orderData.customers.lon}`} />
+          </div>
+          {orderData.status === 'Pending' ? (
+            <button style={styles.btn} onClick={() => {
+              updateStatus('Out for Delivery');
+              window.open(`https://www.openstreetmap.org/directions?engine=fossgis_osrm_car&route=${orderData.stores.lat},${orderData.stores.lon};${orderData.customers.lat},${orderData.customers.lon}`, '_blank');
+            }}>Start Route</button>
           ) : (
-            <p style={{ color: colors.textMuted, textAlign: 'center' }}>No active tasks found.</p>
+            <button style={{ ...styles.btn, backgroundColor: BRAND.green }} onClick={() => setShowPoD(true)}>Mark as Delivered</button>
           )}
-        </div>
-
-        {/* ACTION BUTTON */}
-        <button 
-          onClick={() => order && window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.delivery_address)}`, '_blank')}
-          disabled={loading || !order}
-          style={{
-            backgroundColor: (loading || !order) ? '#ccc' : colors.mishTeeOrange,
-            color: 'white',
-            border: 'none',
-            borderRadius: '12px',
-            padding: '18px',
-            fontSize: '16px',
-            fontWeight: '700',
-            cursor: (loading || !order) ? 'not-allowed' : 'pointer',
-            boxShadow: '0 10px 15px -3px rgba(255, 140, 0, 0.3)',
-            width: '100%'
-          }}
-        >
-          Open Navigation
-        </button>
-
-      </main>
+        </>
+      )}
+      <button onClick={() => setAgent(null)} style={{ marginTop: 'auto', background: 'none', border: 'none', color: '#9CA3AF', padding: '20px', cursor: 'pointer' }}>Logout</button>
     </div>
   );
 }
